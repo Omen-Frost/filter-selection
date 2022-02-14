@@ -10,6 +10,7 @@ import os, argparse, time
 from scipy.spatial import distance
 import numpy as np
 import cvxpy as cp
+import faiss
 
 from arch import resnet
 from utils import RecorderMeter
@@ -28,8 +29,14 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("device:",device)
 cudnn.benchmark = True
 best_acc = 0  # best test accuracy
+
 epochs=1 # total epochs
+start_epoch=0
+resume=False
 pruning_ratio = 0.5 # percentage of filters to keep
+inc_batch_sz = 64
+ext_max_size = 128
+
 
 # Data
 print('==> Preparing data..')
@@ -66,8 +73,8 @@ net = net.to(device)
 
 # see layer shapes of the network
 # for index, item in enumerate(net.parameters()):
-#     print(index,item.shape)
-#     print(item.data)
+    # print(index,item.shape)
+# # #     print(item.data)
 # exit()
 # for name,module in net.named_children():
 #     print(name)
@@ -79,6 +86,15 @@ optimizer = optim.SGD(net.parameters(), lr=0.1,
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 recorder = RecorderMeter(epochs)
 
+if resume:
+    print('loading checkpoint')
+    checkpoint = torch.load('./checkpoint/ckp.pth')
+    recorder = checkpoint['recorder']
+    start_epoch=checkpoint['epoch']+1
+    net.load_state_dict(checkpoint['net'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
+
 features = {}
 layer_begin=0
 layer_end = 60 # for resnet18
@@ -86,27 +102,66 @@ layer_interval = 3
 N_layers = 0
 shape_layers = []
 
-def findFilterSubset(D):
-    z = cp.Variable((D.shape[0],D.shape[1]), boolean=True)  
-    constraints = [ cp.sum(z, axis=1) == 1, cp.sum(cp.max(z,axis=0)) <= D.shape[0]*pruning_ratio]
-    objective    = cp.Minimize(cp.sum(cp.multiply(D,z)))
+def solver1(incD):
+    z = cp.Variable((incD.shape[0],incD.shape[1]), boolean=True)  
+    constraints = [ cp.sum(z, axis=1) == 1, cp.sum(cp.max(z,axis=0)) <= incD.shape[0]*pruning_ratio]
+    objective    = cp.Minimize(cp.sum(cp.multiply(incD,z)))
     prob = cp.Problem(objective, constraints)
     prob.solve()  
-    print("status:", prob.status)
-    print("optimal value", prob.value)
+    # print("status:", prob.status)
+    # print("optimal value", prob.value)
 
-    selected_idx = np.max(z.value,axis=0)
-    prune_idx = 1 - selected_idx.astype(int)
-    return prune_idx
-   
-def zeroize(net, prune_idx):
+    L = np.max(z.value,axis=0).astype(int).tolist()
+    selected_idx = []
+    for i,b in enumerate(L):
+        if b:
+            selected_idx.append(i)
+    return selected_idx
+
+def solver2(incD, incXextD):
+    Zn = cp.Variable((incD.shape[0],incD.shape[1]), boolean=True)  
+    Zo = cp.Variable((incXextD.shape[0],incXextD.shape[1]), boolean=True)  
+    constraints = [ cp.sum(Zn, axis=1) + cp.sum(Zo, axis=1) == 1, cp.sum(cp.max(Zn,axis=0)) <= incD.shape[0]*pruning_ratio]
+    objective    = cp.Minimize(cp.sum(cp.multiply(incD,Zn)) + cp.sum(cp.multiply(incXextD,Zo)))
+    prob = cp.Problem(objective, constraints)
+    prob.solve()  
+
+    L = np.max(Zn.value,axis=0).astype(int).tolist()
+    selected_idx = []
+    for i,b in enumerate(L):
+        if b:
+            selected_idx.append(i)
+    return selected_idx
+
+
+# finds optimal subset of filters from a single layer
+def findFilterSubset(D):
+    if D.shape[0] <= inc_batch_sz :
+        return solver1(D)
+    
+    batches = D.shape[0]//inc_batch_sz
+    ext_set = []
+    for i in range(0,batches):
+        if i==0:
+            ext_set+= solver1(D[0:inc_batch_sz, 0:inc_batch_sz])
+        else :
+            I = solver2(D[inc_batch_sz*i:inc_batch_sz*(i+1), inc_batch_sz*i:inc_batch_sz*(i+1)], 
+                    D[np.ix_(list(range(inc_batch_sz*i,inc_batch_sz*(i+1))), ext_set)] )
+            for j in I:
+                ext_set.append(j+i*inc_batch_sz)
+        print("batch",i)
+
+    return ext_set
+
+
+
+def zeroize(net, selected_idx):
 
     for i, weights in enumerate(net.parameters()):
         if i%3 == 0 and i<layer_end:
             layer = i//3
-            print("zeroizing", layer)
-            for filter_idx, prune in enumerate(prune_idx[layer]):
-                if prune:
+            for filter_idx in range(0,shape_layers[layer][0]):
+                if not filter_idx in selected_idx[layer]:
                     weights.data[filter_idx] = 0
 
 
@@ -121,7 +176,6 @@ def train(epoch):
         dist_mat.append(np.zeros([shape_layers[layer][0], shape_layers[layer][0] ]))
 
     for batch_idx, (inputs, targets) in enumerate(trainloader):
-        # print(len(trainloader), inputs.size(), targets.size(), sep='\n\n\n')
         
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
@@ -136,26 +190,30 @@ def train(epoch):
         correct += predicted.eq(targets).sum().item()
 
         for layer in range(0,N_layers):
-            for outputs in features[layer]:
-                vec = outputs.reshape(outputs.shape[0], -1)
-                dist_mat[layer]+= distance.cdist(vec,vec,"euclidean")
-        break
+            # features[layer]: B * F * H * W 
+            # for outputs in features[layer]:
+            #     vec = outputs.reshape(outputs.shape[0], -1)
+            #     dist_mat[layer]+= distance.cdist(vec,vec,"euclidean")
+            tns = features[layer].flatten(2)
+            dist_mat[layer]+= torch.cdist(tns,tns,p=2).sum(0).cpu().detach().numpy()
+        # break
+
 
     # average distances between fmaps over whole training set
     for mat in dist_mat:
         mat = mat/trainset.__len__()
 
-    prune_idx = []
+    selected_idx = []
     for layer in range(0,N_layers):
         # filter selection
-        prune_idx.append(findFilterSubset(dist_mat[layer]))
+        print("filter selection for layer",layer)
+        selected_idx.append(findFilterSubset(dist_mat[layer]))
         
     # prune selected filters by zeroizing
-    zeroize(net, prune_idx)
-
+    zeroize(net, selected_idx)
 
     acc = 100.*correct/total
-    train_loss = 100.*train_loss/total
+    train_loss = train_loss/total
 
     print("\nTrain Accuracy:",acc, "\n Train Loss:", train_loss)
     return acc, train_loss
@@ -179,10 +237,10 @@ def test(epoch):
             correct += predicted.eq(targets).sum().item()
 
     acc = 100.*correct/total
-    test_loss = 100.*test_loss/total
-    # Save checkpoint.
+    test_loss = test_loss/total
+
     if acc > best_acc:
-        print('Saving..')
+        print('Saving best checkpoint..')
         state = {
             'net': net.state_dict(),
             'acc': acc,
@@ -190,7 +248,7 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/ckpt.pth')
+        torch.save(state, './checkpoint/best.pth')
         best_acc = acc
     
     print("\nTest Accuracy:",acc, "\n Test Loss:", test_loss)
@@ -210,12 +268,11 @@ for layer in net.modules():
         layer.register_forward_hook(get_features(layer_id))
         layer_id+=1
         shape_layers.append(layer.weight.shape)
-        # print(layer)
 N_layers = layer_id
 
 start_time = time.time()
 
-for epoch in range(0, epochs):
+for epoch in range(start_epoch, epochs):
     print("Training epoch",epoch)
     train_acc, train_loss = train(epoch)
 
@@ -226,8 +283,22 @@ for epoch in range(0, epochs):
     recorder.update(epoch, train_loss, train_acc, test_loss, test_acc)
     recorder.plot_curve('curve.png')
 
+    # Save checkpoint.
+    print('Saving checkpoint..')
+    state = {
+        'net': net.state_dict(),
+        'epoch': epoch,
+        'recorder': recorder,
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+    }
+    if not os.path.isdir('checkpoint'):
+        os.mkdir('checkpoint')
+    torch.save(state, './checkpoint/ckp.pth')
+
     epoch_time = time.time() - start_time
     print("Epoch duration",epoch_time/60,"mins")
     start_time = time.time()
 
+print("Best acc:",best_acc)
 

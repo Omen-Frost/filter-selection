@@ -29,6 +29,7 @@ cudnn.benchmark = True
 best_acc = 0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 epochs = 200
+resume=1
 
 # Data
 print('==> Preparing data..')
@@ -68,6 +69,15 @@ optimizer = optim.SGD(net.parameters(), lr=0.1,
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
 
 recorder = RecorderMeter(epochs)
+
+if resume:
+    print('loading checkpoint')
+    checkpoint = torch.load('./checkpoint/ckp.pth')
+    recorder = checkpoint['recorder']
+    start_epoch=checkpoint['epoch']+1
+    net.load_state_dict(checkpoint['net'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
 
 # Training
 def train(epoch):
@@ -118,7 +128,7 @@ def test(epoch):
 
     # Save checkpoint.
     if acc > best_acc:
-        print('Saving..')
+        print('Saving Best..')
         state = {
             'net': net.state_dict(),
             'acc': acc,
@@ -126,7 +136,7 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/base18.pth')
+        torch.save(state, './checkpoint/best_base18.pth')
         best_acc = acc
     
     print("\nTest Accuracy:",acc, "\n Test Loss:", test_loss)
@@ -145,6 +155,19 @@ for epoch in range(start_epoch, epochs): #Run till convergence
     scheduler.step()
     recorder.update(epoch, train_loss, train_acc, test_loss, test_acc)
     recorder.plot_curve('curve.png')
+
+    # Save checkpoint.
+    print('Saving checkpoint..')
+    state = {
+        'net': net.state_dict(),
+        'epoch': epoch,
+        'recorder': recorder,
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+    }
+    if not os.path.isdir('checkpoint'):
+        os.mkdir('checkpoint')
+    torch.save(state, './checkpoint/ckp.pth')
 
     epoch_time = time.time() - start_time
     print("Epoch duration",epoch_time/60,"mins")
