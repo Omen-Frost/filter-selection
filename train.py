@@ -1,48 +1,49 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 
 import torchvision
 import torchvision.transforms as transforms
 
 import os, argparse, time
+
 from utils import RecorderMeter
+import resnets
 
-from arch import resnet
 
+# parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
+# parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
+# parser.add_argument('--resume', '-r', action='store_true',
+#                     help='resume from checkpoint')
+# args = parser.parse_args()
 
-parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-parser.add_argument('--resume', '-r', action='store_true',
-                    help='resume from checkpoint')
-args = parser.parse_args()
-
-torch.autograd.set_detect_anomaly(False)
-torch.autograd.profiler.profile(False)
-torch.autograd.profiler.emit_nvtx(False)
+# torch.autograd.set_detect_anomaly(False)
+# torch.autograd.profiler.profile(False)
+# torch.autograd.profiler.emit_nvtx(False)
+# cudnn.benchmark = True
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("device:",device)
-cudnn.benchmark = True
 best_acc = 0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
-epochs = 200
-resume=1
+epochs = 300
+resume=0
 
 # Data
 print('==> Preparing data..')
+normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
 transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    normalize,
 ])
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    normalize,
 ])
 
 trainset = torchvision.datasets.CIFAR10(
@@ -60,19 +61,19 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer',
 
 # Model
 print('==> Building model..')
-net = resnet.ResNet18()
+net = resnets.resnet32()
 net = net.to(device)
 
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss().to(device)
 optimizer = optim.SGD(net.parameters(), lr=0.1,
-                      momentum=0.9, weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+                      momentum=0.9, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150, 225], last_epoch=start_epoch - 1)
 
 recorder = RecorderMeter(epochs)
 
 if resume:
     print('loading checkpoint')
-    checkpoint = torch.load('./checkpoint/ckp.pth')
+    checkpoint = torch.load('./checkpoint/orig_ckp.pth')
     recorder = checkpoint['recorder']
     start_epoch=checkpoint['epoch']+1
     net.load_state_dict(checkpoint['net'])
@@ -136,7 +137,7 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/best_base18.pth')
+        torch.save(state, './checkpoint/best_base.pth')
         best_acc = acc
     
     print("\nTest Accuracy:",acc, "\n Test Loss:", test_loss)
@@ -167,7 +168,7 @@ for epoch in range(start_epoch, epochs): #Run till convergence
     }
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
-    torch.save(state, './checkpoint/ckp.pth')
+    torch.save(state, './checkpoint/orig_ckp.pth')
 
     epoch_time = time.time() - start_time
     print("Epoch duration",epoch_time/60,"mins")

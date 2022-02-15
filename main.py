@@ -10,46 +10,44 @@ import os, argparse, time
 from scipy.spatial import distance
 import numpy as np
 import cvxpy as cp
-import faiss
 
-from arch import resnet
 from utils import RecorderMeter
+import resnets
 
-parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-parser.add_argument('--resume', '-r', action='store_true',
-                    help='resume from checkpoint')
-args = parser.parse_args()
 
-torch.autograd.set_detect_anomaly(False)
-torch.autograd.profiler.profile(False)
-torch.autograd.profiler.emit_nvtx(False)
+# torch.autograd.set_detect_anomaly(False)
+# torch.autograd.profiler.profile(False)
+# torch.autograd.profiler.emit_nvtx(False)
+# cudnn.benchmark = True
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("device:",device)
-cudnn.benchmark = True
 best_acc = 0  # best test accuracy
 
-epochs=1 # total epochs
+# hyperparams
+epochs=300 # total epochs
 start_epoch=0
 resume=False
+layer_end = 91 # for resnet32
 pruning_ratio = 0.5 # percentage of filters to keep
 inc_batch_sz = 64
 ext_max_size = 128
-
+###
 
 # Data
 print('==> Preparing data..')
+normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
 transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    normalize,
 ])
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    normalize,
 ])
 
 trainset = torchvision.datasets.CIFAR10(
@@ -68,22 +66,23 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer',
 
 # Model
 print('==> Building model..')
-net = resnet.ResNet18()
+
+net = resnets.resnet32()
 net = net.to(device)
 
 # see layer shapes of the network
 # for index, item in enumerate(net.parameters()):
-    # print(index,item.shape)
+#     print(index,item.shape)
 # # #     print(item.data)
 # exit()
 # for name,module in net.named_children():
 #     print(name)
 
 
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss().to(device)
 optimizer = optim.SGD(net.parameters(), lr=0.1,
-                      momentum=0.9, weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+                      momentum=0.9, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150, 225], last_epoch=start_epoch - 1)
 recorder = RecorderMeter(epochs)
 
 if resume:
@@ -97,7 +96,6 @@ if resume:
 
 features = {}
 layer_begin=0
-layer_end = 60 # for resnet18
 layer_interval = 3
 N_layers = 0
 shape_layers = []
@@ -154,7 +152,6 @@ def findFilterSubset(D):
     return ext_set
 
 
-
 def zeroize(net, selected_idx):
 
     for i, weights in enumerate(net.parameters()):
@@ -205,8 +202,7 @@ def train(epoch):
 
     selected_idx = []
     for layer in range(0,N_layers):
-        # filter selection
-        print("filter selection for layer",layer)
+        # print("filter selection for layer",layer)
         selected_idx.append(findFilterSubset(dist_mat[layer]))
         
     # prune selected filters by zeroizing
@@ -258,7 +254,7 @@ def test(epoch):
 # hook for extracting features from intermediate layers
 def get_features(name):
     def hook(model, input, output):
-        features[name] = output.cpu().detach().numpy()
+        features[name] = output.detach()
     return hook
 
 # register forward hooks for each conv layer
