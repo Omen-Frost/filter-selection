@@ -12,12 +12,6 @@ from utils import RecorderMeter
 import resnets
 
 
-# parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-# parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-# parser.add_argument('--resume', '-r', action='store_true',
-#                     help='resume from checkpoint')
-# args = parser.parse_args()
-
 # torch.autograd.set_detect_anomaly(False)
 # torch.autograd.profiler.profile(False)
 # torch.autograd.profiler.emit_nvtx(False)
@@ -27,13 +21,13 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("device:",device)
 best_acc = 0  # best test accuracy
 start_epoch = 0  # start from epoch 0 or last checkpoint epoch
-epochs = 300
+epochs = 150
 resume=0
 
 # Data
 print('==> Preparing data..')
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+normalize = transforms.Normalize(mean=[x / 255 for x in [125.3, 123.0, 113.9]],
+                                     std=[x / 255 for x in [63.0, 62.1, 66.7]]) # from FPGM
 transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
@@ -65,20 +59,20 @@ net = resnets.resnet32()
 net = net.to(device)
 
 criterion = nn.CrossEntropyLoss().to(device)
-optimizer = optim.SGD(net.parameters(), lr=0.1,
+optimizer = optim.SGD(net.parameters(), lr=0.01,
                       momentum=0.9, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150, 225], last_epoch=start_epoch - 1)
+# scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150, 225], last_epoch=start_epoch - 1)
 
 recorder = RecorderMeter(epochs)
 
 if resume:
     print('loading checkpoint')
-    checkpoint = torch.load('./checkpoint/orig_ckp.pth')
+    checkpoint = torch.load('./checkpoint/base_ckp.pth')
     recorder = checkpoint['recorder']
     start_epoch=checkpoint['epoch']+1
     net.load_state_dict(checkpoint['net'])
     optimizer.load_state_dict(checkpoint['optimizer'])
-    scheduler.load_state_dict(checkpoint['scheduler'])
+    # scheduler.load_state_dict(checkpoint['scheduler'])
 
 # Training
 def train(epoch):
@@ -100,7 +94,7 @@ def train(epoch):
         correct += predicted.eq(targets).sum().item()
 
     acc = 100.*correct/total
-    train_loss = 100.*train_loss/total
+    train_loss = train_loss/total
 
     print("\nTrain Accuracy:",acc, "\n Train Loss:", train_loss)
     return acc, train_loss
@@ -125,7 +119,7 @@ def test(epoch):
             correct += predicted.eq(targets).sum().item()
 
     acc = 100.*correct/total
-    test_loss = 100.*test_loss/total
+    test_loss = test_loss/total
 
     # Save checkpoint.
     if acc > best_acc:
@@ -153,9 +147,10 @@ for epoch in range(start_epoch, epochs): #Run till convergence
     print("Testing epoch",epoch)
     test_acc, test_loss = test(epoch)
 
-    scheduler.step()
+    # scheduler.step()
     recorder.update(epoch, train_loss, train_acc, test_loss, test_acc)
-    recorder.plot_curve('curve.png')
+    recorder.plot_curve_acc('train_curve.png')
+    recorder.plot_curve_loss('train_curve.png')
 
     # Save checkpoint.
     print('Saving checkpoint..')
@@ -164,13 +159,14 @@ for epoch in range(start_epoch, epochs): #Run till convergence
         'epoch': epoch,
         'recorder': recorder,
         'optimizer': optimizer.state_dict(),
-        'scheduler': scheduler.state_dict(),
+        # 'scheduler': scheduler.state_dict(),
     }
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
-    torch.save(state, './checkpoint/orig_ckp.pth')
+    torch.save(state, './checkpoint/base_ckp.pth')
 
     epoch_time = time.time() - start_time
     print("Epoch duration",epoch_time/60,"mins")
     start_time = time.time()
 
+print("Best acc",best_acc)
