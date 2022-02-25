@@ -92,9 +92,9 @@ net = net.to(device)
 
 
 criterion = nn.CrossEntropyLoss().to(device)
-optimizer = optim.SGD(net.parameters(), lr=0.01,
+optimizer = optim.SGD(net.parameters(), lr=0.1,
                       momentum=0.9, weight_decay=1e-4)
-# scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50,100], last_epoch=start_epoch - 1)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50,100], last_epoch=start_epoch - 1)
 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 recorder = RecorderMeter(epochs)
 
@@ -114,7 +114,7 @@ if resume:
     start_epoch=checkpoint['epoch']+1
     net.load_state_dict(checkpoint['net'])
     optimizer.load_state_dict(checkpoint['optimizer'])
-    # scheduler.load_state_dict(checkpoint['scheduler'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
     pruned_idx=checkpoint['pruned_idx']
 
 
@@ -189,21 +189,11 @@ def prune():
     for layer in range(0,N_layers):
         dist_mat.append(np.zeros([shape_layers[layer][0], shape_layers[layer][0] ]))
 
-    valid_loss = 0
-    correct = 0
-    total = 0
-
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(validloader):
             
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = net(inputs)
-            loss = criterion(outputs, targets)   
-            valid_loss += loss.item()*inputs.size(0)
-
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
 
             for layer in range(0,N_layers):
             # features[layer]: B * F * H * W 
@@ -217,7 +207,7 @@ def prune():
             
 
         # average distances between fmaps over whole set
-        dist_mat[:] = [mat/total for mat in dist_mat]
+        dist_mat[:] = [mat/validset.__len__() for mat in dist_mat]
         
         for layer in range(0,N_layers):
             selected = findFilterSubset(dist_mat[layer])
@@ -229,11 +219,6 @@ def prune():
     
     is_pruning=False
 
-    acc = 100.*correct/total
-    valid_loss = valid_loss/total
-    
-    print("\nValid Accuracy:",acc, "\n Valid Loss:", valid_loss)
-    return acc, valid_loss
         
 
 # Training
@@ -301,6 +286,27 @@ def test(epoch):
     print("\nTest Accuracy:",acc, "\n Test Loss:", test_loss)
     return acc, test_loss
 
+def valid():
+    valid_loss = 0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch_idx, (inputs, targets) in enumerate(validloader):
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = net(inputs)
+            loss = criterion(outputs, targets)   
+            valid_loss += loss.item()*inputs.size(0)
+
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+            
+
+    acc = 100.*correct/total
+    valid_loss = valid_loss/total
+    
+    print("\nValid Accuracy:",acc, "\n Valid Loss:", valid_loss)
+    return acc, valid_loss
 
 # hook for extracting features from intermediate layers
 def get_features(name):
@@ -334,12 +340,15 @@ for epoch in range(start_epoch, epochs):
 
     if (epoch+1)%prune_interval==0:
         print("Pruning epoch",epoch)
-        valid_acc, valid_loss = prune()
+        prune()
+
+    print("Validating epoch",epoch)
+    valid_acc, valid_loss = valid()
 
     print("Testing epoch",epoch)
     test_acc, test_loss = test(epoch)
 
-    # scheduler.step()
+    scheduler.step()
     recorder.update(epoch, train_loss, train_acc, test_loss, test_acc, valid_loss, valid_acc)
     recorder.plot_curve_acc('prune_curve.png')
     recorder.plot_curve_loss('prune_curve.png')
@@ -352,7 +361,7 @@ for epoch in range(start_epoch, epochs):
             'epoch': epoch,
             'recorder': recorder,
             'optimizer': optimizer.state_dict(),
-            # 'scheduler': scheduler.state_dict(),
+            'scheduler': scheduler.state_dict(),
             'pruned_idx': pruned_idx,
         }
         torch.save(state, './checkpoint/ckp.pth')
