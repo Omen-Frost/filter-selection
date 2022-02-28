@@ -59,9 +59,9 @@ net = resnets.resnet32()
 net = net.to(device)
 
 criterion = nn.CrossEntropyLoss().to(device)
-optimizer = optim.SGD(net.parameters(), lr=0.01,
+optimizer = optim.SGD(net.parameters(), lr=0.1,
                       momentum=0.9, weight_decay=1e-4)
-# scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150, 225], last_epoch=start_epoch - 1)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50,100], last_epoch=start_epoch - 1)
 
 recorder = RecorderMeter(epochs)
 
@@ -72,7 +72,7 @@ if resume:
     start_epoch=checkpoint['epoch']+1
     net.load_state_dict(checkpoint['net'])
     optimizer.load_state_dict(checkpoint['optimizer'])
-    # scheduler.load_state_dict(checkpoint['scheduler'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
 
 # Training
 def train(epoch):
@@ -147,7 +147,7 @@ for epoch in range(start_epoch, epochs): #Run till convergence
     print("Testing epoch",epoch)
     test_acc, test_loss = test(epoch)
 
-    # scheduler.step()
+    scheduler.step()
     recorder.update(epoch, train_loss, train_acc, test_loss, test_acc)
     recorder.plot_curve_acc('train_curve.png')
     recorder.plot_curve_loss('train_curve.png')
@@ -159,7 +159,7 @@ for epoch in range(start_epoch, epochs): #Run till convergence
         'epoch': epoch,
         'recorder': recorder,
         'optimizer': optimizer.state_dict(),
-        # 'scheduler': scheduler.state_dict(),
+        'scheduler': scheduler.state_dict(),
     }
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
