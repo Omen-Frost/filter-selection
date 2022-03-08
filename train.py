@@ -6,10 +6,11 @@ import torch.backends.cudnn as cudnn
 import torchvision
 import torchvision.transforms as transforms
 
-import os, argparse, time
+import os, argparse, time, sys
 
+sys.path.append('/kaggle/input/lrfimport')
 from utils import RecorderMeter
-import resnets
+import resnet
 
 
 # torch.autograd.set_detect_anomaly(False)
@@ -26,8 +27,7 @@ resume=0
 
 # Data
 print('==> Preparing data..')
-normalize = transforms.Normalize(mean=[x / 255 for x in [125.3, 123.0, 113.9]],
-                                     std=[x / 255 for x in [63.0, 62.1, 66.7]]) # from FPGM
+normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
@@ -55,7 +55,7 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer',
 
 # Model
 print('==> Building model..')
-net = resnets.resnet32()
+net = resnet.resnet32()
 net = net.to(device)
 
 criterion = nn.CrossEntropyLoss().to(device)
@@ -161,9 +161,9 @@ for epoch in range(start_epoch, epochs): #Run till convergence
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict(),
     }
-    if not os.path.isdir('checkpoint'):
-        os.mkdir('checkpoint')
-    torch.save(state, './checkpoint/base_ckp.pth')
+    # if not os.path.isdir('checkpoint'):
+    #     os.mkdir('checkpoint')
+    # torch.save(state, './checkpoint/base_ckp.pth')
 
     epoch_time = time.time() - start_time
     print("Epoch duration",epoch_time/60,"mins")
