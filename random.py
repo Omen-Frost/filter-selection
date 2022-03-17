@@ -11,6 +11,7 @@ import sys
 import time
 from scipy.spatial import distance
 import numpy as np
+import random
 
 sys.path.append('/kaggle/input/lrfimport')
 from utils import RecorderMeter
@@ -86,9 +87,9 @@ optimizer = optim.SGD(net.parameters(), lr=0.001,
                       momentum=0.9, weight_decay=1e-4)
 
 if model == 'resnet32':
-    recorder = RecorderMeter(155)
+    recorder = RecorderMeter(157)
 elif model == 'resnet56':
-    recorder = RecorderMeter(141)
+    recorder = RecorderMeter(142)
 
 
 features = {}  # stores output feature maps for each layer
@@ -123,44 +124,12 @@ def zeroize():
             for filter_idx in pruned_idx[layer]:
                 weights.data[filter_idx] = 0
 
-# Pruning
 def prune(layer):
-    net.eval()
-    #register hook for layer
-    layer_id = 0
-    for L in net.modules():
-        if isinstance(L, torch.nn.modules.conv.Conv2d):
-            if layer_id == layer:
-                handle = L.register_forward_hook(get_features(layer_id))
-                break
-            layer_id += 1
-
-    with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(testloader):
-
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = net(inputs)
-
-        # features[layer]: B * F * H * W
-        f = np.delete(features[layer],pruned_idx[layer],1) # remove fmaps of zeroized filters
-        tns = torch.from_numpy(f).to('cuda').flatten(2)
-        dist_mat = torch.cdist(tns, tns, p=2).sum(0).cpu().detach().numpy() #output fmaps' pairwise distances
-
-        idx = distance.cdist(dist_mat,dist_mat,"euclidean").sum(1).argmin(0) # idx to remove
-
-        for i in pruned_idx[layer]:
-            if i <= idx :
-                idx+=1
-        if idx<shape_layers[layer][0] and idx not in pruned_idx[layer]:
-            pruned_idx[layer].append(idx)
-            pruned_idx[layer].sort()
-            print("Layer",layer, "Pruned filter",idx)
-        else :
-            print("Error layer",layer,"idx",idx)
-            print(pruned_idx[layer])
-        
-    handle.remove()
-
+    L=[]
+    for x in range(0,shape_layers[layer][0]):
+        if x not in pruned_idx[layer]:
+            L.append(x)
+    pruned_idx[layer].append(random.sample(L,1)[0])
 
 # Training
 def train():
@@ -263,16 +232,17 @@ for epoch in range(0,warmup):
 i=0
 j=4
 if model == 'resnet32':
-    j=4
+    j=5
 elif model == 'resnet56':
-    j=8
+    j=10
 
 print("Pruning>")
-for layer in reversed(range(1,N_layers)):
+for layer in reversed(range(0,N_layers)):
 
     print(pruned_idx)
     print("#### Pruning layer",layer,"####")
     pruning_num = int(round(shape_layers[layer][0] * pruning_ratio))
+    pruning_num += pruning_num/4
     for _ in range(pruning_num):
         start_time = time.time()
 
@@ -301,7 +271,6 @@ print(pruned_idx)
 test_acc, test_loss = test()
 print("TEST ACC",test_acc, "Loss",test_loss)
 
-filterStatus()
 print('Saving pruned model..')
 state = {
     'net': net.state_dict(),

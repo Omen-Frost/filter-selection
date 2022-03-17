@@ -24,7 +24,9 @@ print("device:",device)
 best_acc = 0  # best test accuracy
 
 # hyperparams
-epochs=150 # total epochs
+epochs=300 # total epochs
+model = 'resnet32' # 'resnet32' or 'resnet56'
+load_path = 'pruned.pth' # Pruned model path
 ###
 
 # Data
@@ -57,11 +59,16 @@ testloader = torch.utils.data.DataLoader(
 # Model
 print('==> Building model..')
 
-net = resnet.resnet32()
+if model == 'resnet32':
+    net = resnet.resnet32()
+elif model == 'resnet56':
+    net = resnet.resnet56()
 net = net.to(device)
 
 print('loading checkpoint')
-checkpoint = torch.load('../input/finetune/pruned.pth')
+checkpoint = torch.load(load_path)
+device_ids = [0]
+net = torch.nn.DataParallel(net, device_ids=device_ids)
 net.load_state_dict(checkpoint['net'])
 pruned_idx=checkpoint['pruned']
 print(pruned_idx)
@@ -69,15 +76,14 @@ print(pruned_idx)
 criterion = nn.CrossEntropyLoss().to(device)
 optimizer = optim.SGD(net.parameters(), lr=0.01,
                       momentum=0.9, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[75])
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150])
 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 recorder = RecorderMeter(epochs)
 
 
-
 def zeroize():
     for i, weights in enumerate(net.parameters()):
-        if i%3 == 0 and i<91:
+        if i%3 == 0 and i//3<N_layers:
             layer = i//3
             for filter_idx in pruned_idx[layer]:
                 weights.data[filter_idx] = 0
@@ -152,11 +158,20 @@ def test(epoch):
     return acc, test_loss
 
 
+
 if not os.path.isdir('checkpoint'):
     os.mkdir('checkpoint')
-start_time = time.time()
+
+layer_id = 0
+for layer in net.modules():
+    if isinstance(layer, torch.nn.modules.conv.Conv2d):
+        layer_id += 1
+N_layers = layer_id
 
 test(0)
+best_acc=0
+start_time = time.time()
+
 for epoch in range(0, epochs):
 
     print("Training epoch",epoch)
