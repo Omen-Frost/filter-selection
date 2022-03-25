@@ -3,7 +3,6 @@ import numpy as np
 import matplotlib
 # matplotlib.use('agg')
 import matplotlib.pyplot as plt
-import random
 
 class AverageMeter(object):
   """Computes and stores the average and current value"""
@@ -25,34 +24,26 @@ class AverageMeter(object):
 
 class RecorderMeter(object):
   """Computes and stores the minimum loss value and its epoch index"""
-  def __init__(self, total_epoch):
-    self.reset(total_epoch)
+  def __init__(self):
+    self.limit=305
+    self.reset()
+    self.idx=0
 
-  def reset(self, total_epoch):
-    assert total_epoch > 0
-    self.total_epoch   = total_epoch
-    self.current_epoch = 0
-    self.epoch_losses  = np.zeros((self.total_epoch, 3), dtype=np.float32) # [epoch, train/val]
+  def reset(self):
+    self.epoch_losses  = np.zeros((self.limit, 3), dtype=np.float32) # [epoch, train/val]
     self.epoch_losses  = self.epoch_losses - 1
 
-    self.epoch_accuracy= np.zeros((self.total_epoch, 3), dtype=np.float32) # [epoch, train/val]
+    self.epoch_accuracy= np.zeros((self.limit, 3), dtype=np.float32) # [epoch, train/val]
     self.epoch_accuracy= self.epoch_accuracy
 
-  def update(self, idx, train_loss, train_acc, test_loss, test_acc, val_loss=0.0, val_acc=0.0):
-    assert idx >= 0 and idx < self.total_epoch, 'total_epoch : {} , but update with the {} index'.format(self.total_epoch, idx)
-    self.epoch_losses  [idx, 0] = train_loss
-    self.epoch_losses  [idx, 1] = test_loss
-    self.epoch_losses  [idx, 2] = val_loss
-    self.epoch_accuracy[idx, 0] = train_acc
-    self.epoch_accuracy[idx, 1] = test_acc
-    self.epoch_accuracy[idx, 2] = val_acc
-    self.current_epoch = idx + 1
-    return self.max_accuracy(False) == test_acc
-
-  def max_accuracy(self, istrain):
-    if self.current_epoch <= 0: return 0
-    if istrain: return self.epoch_accuracy[:self.current_epoch, 0].max()
-    else:       return self.epoch_accuracy[:self.current_epoch, 1].max()
+  def update(self, train_loss, train_acc, test_loss, test_acc, val_loss=0.0, val_acc=0.0):
+    self.epoch_losses  [self.idx, 0] = train_loss
+    self.epoch_losses  [self.idx, 1] = test_loss
+    self.epoch_losses  [self.idx, 2] = val_loss
+    self.epoch_accuracy[self.idx, 0] = train_acc
+    self.epoch_accuracy[self.idx, 1] = test_acc
+    self.epoch_accuracy[self.idx, 2] = val_acc
+    self.idx += 1
   
   def plot_curve_acc(self, save_path):
     title = 'accuracy vs epochs'
@@ -63,30 +54,30 @@ class RecorderMeter(object):
     figsize = width / float(dpi), height / float(dpi)
 
     fig = plt.figure(figsize=figsize)
-    x_axis = np.array([i for i in range(self.total_epoch)]) # epochs
-    y_axis = np.zeros(self.total_epoch)
+    x_axis = np.array([i for i in range(self.idx)]) # epochs
+    y_axis = np.zeros(self.idx)
 
-    plt.xlim(0, self.total_epoch)
+    plt.xlim(0, self.idx)
     plt.ylim(0, 100)
     interval_y = 5
     interval_x = 10
-    plt.xticks(np.arange(0, self.total_epoch + interval_x, interval_x))
+    plt.xticks(np.arange(0, self.idx + interval_x, interval_x))
     plt.yticks(np.arange(0, 100 + interval_y, interval_y))
     plt.grid()
     plt.title(title, fontsize=20)
     plt.xlabel('the training epoch', fontsize=16)
     plt.ylabel('accuracy', fontsize=16)
   
-    y_axis[:] = self.epoch_accuracy[:, 0]
+    y_axis[:] = self.epoch_accuracy[:self.idx, 0]
     plt.plot(x_axis, y_axis, color='g', linestyle='-', label='train-accuracy', lw=2)
     plt.legend(loc=4, fontsize=legend_fontsize)
 
-    y_axis[:] = self.epoch_accuracy[:, 1]
+    y_axis[:] = self.epoch_accuracy[:self.idx, 1]
     plt.plot(x_axis, y_axis, color='y', linestyle='-', label='test-accuracy', lw=2)
     plt.legend(loc=4, fontsize=legend_fontsize)
 
     if self.epoch_accuracy[:, 2].any():
-      y_axis[:] = self.epoch_accuracy[:, 2]
+      y_axis[:] = self.epoch_accuracy[:self.idxself.idx, 2]
       plt.plot(x_axis, y_axis, color='r', linestyle='-', label='valid-accuracy', lw=2)
       plt.legend(loc=4, fontsize=legend_fontsize)
 
@@ -104,30 +95,30 @@ class RecorderMeter(object):
       figsize = width / float(dpi), height / float(dpi)
 
       fig = plt.figure(figsize=figsize)
-      x_axis = np.array([i for i in range(self.total_epoch)]) # epochs
-      y_axis = np.zeros(self.total_epoch)
+      x_axis = np.array([i for i in range(self.idx)]) # epochs
+      y_axis = np.zeros(self.idx)
 
-      plt.xlim(0, self.total_epoch)
+      plt.xlim(0, self.idx)
       plt.ylim(0, 100)
       interval_y = 5
       interval_x = 10
-      plt.xticks(np.arange(0, self.total_epoch + interval_x, interval_x))
+      plt.xticks(np.arange(0, self.idx + interval_x, interval_x))
       plt.yticks(np.arange(0, 100 + interval_y, interval_y))
       plt.grid()
       plt.title(title, fontsize=20)
       plt.xlabel('the training epoch', fontsize=16)
       plt.ylabel('losses', fontsize=16)
     
-      y_axis[:] = self.epoch_losses[:, 0]
+      y_axis[:] = self.epoch_losses[:self.idx, 0]
       plt.plot(x_axis, y_axis*40, color='g', linestyle=':', label='train-loss-x40', lw=2)
       plt.legend(loc=4, fontsize=legend_fontsize)
 
-      y_axis[:] = self.epoch_losses[:, 1]
+      y_axis[:] = self.epoch_losses[:self.idx, 1]
       plt.plot(x_axis, y_axis*40, color='y', linestyle=':', label='test-loss-x40', lw=2)
       plt.legend(loc=4, fontsize=legend_fontsize)
 
       if self.epoch_losses[:, 2].any():
-        y_axis[:] = self.epoch_losses[:, 2]
+        y_axis[:] = self.epoch_losses[:self.idx, 2]
         plt.plot(x_axis, y_axis*40, color='r', linestyle=':', label='valid-loss-x40', lw=2)
         plt.legend(loc=4, fontsize=legend_fontsize)
 
@@ -136,28 +127,3 @@ class RecorderMeter(object):
         print ('---- save figure {} into {}'.format(title, 'loss_'+save_path))
       plt.close(fig)
     
-
-def time_string():
-  ISOTIMEFORMAT='%Y-%m-%d %X'
-  string = '[{}]'.format(time.strftime( ISOTIMEFORMAT, time.gmtime(time.time()) ))
-  return string
-
-def convert_secs2time(epoch_time):
-  need_hour = int(epoch_time / 3600)
-  need_mins = int((epoch_time - 3600*need_hour) / 60)
-  need_secs = int(epoch_time - 3600*need_hour - 60*need_mins)
-  return need_hour, need_mins, need_secs
-
-def time_file_str():
-  ISOTIMEFORMAT='%Y-%m-%d'
-  string = '{}'.format(time.strftime( ISOTIMEFORMAT, time.gmtime(time.time()) ))
-  return string + '-{}'.format(random.randint(1, 10000))
-
-def timing(f):
-    def wrap(*args):
-        time1 = time.time()
-        ret = f(*args)
-        time2 = time.time()
-        print ('%s function took %0.3f ms' % (f.__name__, (time2-time1)*1000.0))
-        return ret
-    return wrap

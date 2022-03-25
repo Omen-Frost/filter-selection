@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
+import torch.nn.functional as F
 
 import torchvision
 import torchvision.transforms as transforms
@@ -26,7 +27,8 @@ best_acc = 0  # best test accuracy
 # hyperparams
 epochs=300 # total epochs
 model = 'resnet32' # 'resnet32' or 'resnet56'
-load_path = 'pruned.pth' # Pruned model path
+pruned_path = '../input/finetune/pruned.pth' # Pruned model path
+baseline_path = '../input/finetune/model_32.th' # Baseline model path
 ###
 
 # Data
@@ -61,25 +63,44 @@ print('==> Building model..')
 
 if model == 'resnet32':
     net = resnet.resnet32()
+    original_model = resnet.resnet32()
 elif model == 'resnet56':
     net = resnet.resnet56()
+    original_model = resnet.resnet56()
 net = net.to(device)
+original_model = original_model.to(device)
 
 print('loading checkpoint')
-checkpoint = torch.load(load_path)
+checkpoint = torch.load(pruned_path)
 device_ids = [0]
 net = torch.nn.DataParallel(net, device_ids=device_ids)
 net.load_state_dict(checkpoint['net'])
 pruned_idx=checkpoint['pruned']
 print(pruned_idx)
 
+
+checkpoint = torch.load(baseline_path)
+original_model = torch.nn.DataParallel(original_model, device_ids=device_ids)
+original_model.load_state_dict(checkpoint['state_dict'])
+
 criterion = nn.CrossEntropyLoss().to(device)
 optimizer = optim.SGD(net.parameters(), lr=0.01,
                       momentum=0.9, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150])
 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-recorder = RecorderMeter(epochs)
+recorder = RecorderMeter()
 
+def filterStatus():
+    for i, weights in enumerate(net.parameters()):
+        if i%3 == 0 and i//3<N_layers:
+            layer = i//3
+            print("\n\nLayer:",layer, weights.data.shape)
+            L = []
+            for idx, data in enumerate(weights.data):
+                if data.sum() == 0 :
+                    L.append(idx)
+            if L:
+                print("Pruned",len(L),"filters:",L)
 
 def zeroize():
     for i, weights in enumerate(net.parameters()):
@@ -87,6 +108,9 @@ def zeroize():
             layer = i//3
             for filter_idx in pruned_idx[layer]:
                 weights.data[filter_idx] = 0
+
+def distillation_loss(y_logit, t_logit, T=2):
+    return F.kl_div(F.log_softmax(y_logit/T, 1), F.softmax(t_logit/T, 1), reduction='sum')/y_logit.size(0)                
                 
 # Training
 def train(epoch):
@@ -101,7 +125,9 @@ def train(epoch):
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
         outputs = net(inputs)
+        outputs_orig = original_model(inputs)
         loss = criterion(outputs, targets)
+        loss += distillation_loss(outputs, outputs_orig)
         loss.backward()
         optimizer.step()
 
@@ -158,7 +184,6 @@ def test(epoch):
     return acc, test_loss
 
 
-
 if not os.path.isdir('checkpoint'):
     os.mkdir('checkpoint')
 
@@ -170,8 +195,8 @@ N_layers = layer_id
 
 test(0)
 best_acc=0
+filterStatus()
 start_time = time.time()
-
 for epoch in range(0, epochs):
 
     print("Training epoch",epoch)
@@ -181,7 +206,7 @@ for epoch in range(0, epochs):
     test_acc, test_loss = test(epoch)
 
     scheduler.step()
-    recorder.update(epoch, train_loss, train_acc, test_loss, test_acc)
+    recorder.update(train_loss, train_acc, test_loss, test_acc)
     recorder.plot_curve_acc('finetune_curve.png')
     recorder.plot_curve_loss('finetune_loss.png')
 
@@ -190,5 +215,6 @@ for epoch in range(0, epochs):
     print("Epoch duration",epoch_time/60,"mins")
     start_time = time.time()
 
+filterStatus()
 print("Best acc:",best_acc)
 

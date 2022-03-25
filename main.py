@@ -18,11 +18,11 @@ import resnet
 
 #####
 # Hyperparams
-warmup = 15  # initial training
+warmup = 20  # initial training
 resume = True  # resume from checkpoint
 pruning_ratio = 0.5  # percentage of filters to remove
 model = 'resnet32' # 'resnet32' or 'resnet56'
-load_path = 'pretrained/model_32.th' # Original trained model path
+load_path = '../input/lrfimport/model_32.th' # Original trained model path
 #####
 
 # speedup
@@ -53,6 +53,9 @@ transform_test = transforms.Compose([
 trainset = torchvision.datasets.CIFAR10(
     root='./data', train=True, download=True, transform=transform_train)
 
+# split = int(0.1*len(trainset))
+# trainset = torch.utils.data.Subset(trainset, range(split))
+
 trainloader = torch.utils.data.DataLoader(
     trainset, batch_size=128, shuffle=True, num_workers=2)
 
@@ -73,9 +76,9 @@ elif model == 'resnet56':
 net = net.to(device)
 
 # for name, p in net.named_parameters():
-    # if len(p.size())==4 and p.size(3)>1:
-    # print(name,p.size())
-# see layer shapes of the network
+#     # if len(p.size())==4 and p.size(3)>1:
+#     print(name,p.size())
+# # see layer shapes of the network
 # for index, item in enumerate(net.parameters()):
 #     print(index,item.shape)
 # exit()
@@ -85,18 +88,13 @@ criterion = nn.CrossEntropyLoss().to(device)
 optimizer = optim.SGD(net.parameters(), lr=0.001,
                       momentum=0.9, weight_decay=1e-4)
 
-if model == 'resnet32':
-    recorder = RecorderMeter(155)
-elif model == 'resnet56':
-    recorder = RecorderMeter(141)
-
+recorder = RecorderMeter()
 
 features = {}  # stores output feature maps for each layer
 pruned_idx = {}  # stores indices of filters that are pruned for each layer
 layer_begin = 0
 layer_interval = 3  # interval of conv2d layers
 N_layers = 0  # number of conv2d layers in the network
-ckp_interval = 5
 shape_layers = []
 
 if resume:
@@ -118,12 +116,12 @@ def get_features(name):
 
 def zeroize():
     for i, weights in enumerate(net.parameters()):
-        if i%3 == 0 and i//3<N_layers:
+        if i%3 == 0 and i//3 < N_layers:
             layer = i//3
             for filter_idx in pruned_idx[layer]:
                 weights.data[filter_idx] = 0
 
-# Pruning
+#Pruning
 def prune(layer):
     net.eval()
     #register hook for layer
@@ -146,7 +144,12 @@ def prune(layer):
         tns = torch.from_numpy(f).to('cuda').flatten(2)
         dist_mat = torch.cdist(tns, tns, p=2).sum(0).cpu().detach().numpy() #output fmaps' pairwise distances
 
-        idx = distance.cdist(dist_mat,dist_mat,"euclidean").sum(1).argmin(0) # idx to remove
+        # idx = distance.cdist(dist_mat,dist_mat,"euclidean").sum(1).argmin(0) # idx to remove
+        arr = distance.cdist(dist_mat,dist_mat,"euclidean")
+        for g in range(0,arr.shape[0]):
+            arr[g][g]=np.inf
+        
+        idx = arr.min(1).argmin(0) # idx to remove
 
         for i in pruned_idx[layer]:
             if i <= idx :
@@ -160,6 +163,7 @@ def prune(layer):
             print(pruned_idx[layer])
         
     handle.remove()
+    return idx
 
 
 # Training
@@ -234,11 +238,13 @@ for layer in net.modules():
         layer_id += 1
         shape_layers.append(layer.weight.shape)
 N_layers = layer_id
-print(shape_layers[1:])
+# print(shape_layers[1:])
 
 if not os.path.isdir('checkpoint'):
     os.mkdir('checkpoint')
 
+test_acc, test_loss = test()
+print("BASELINE TEST ACC",test_acc, "Loss",test_loss)
 
 print("Warmup Stage>")
 start_time = time.time()
@@ -251,21 +257,21 @@ for epoch in range(0,warmup):
     test_acc, test_loss = test()
 
     # scheduler.step()
-    recorder.update(epoch, train_loss, train_acc, test_loss,
+    recorder.update(train_loss, train_acc, test_loss,
                     test_acc)
     recorder.plot_curve_acc('prune_curve.png')
     recorder.plot_curve_loss('prune_curve.png')
 
     epoch_time = time.time() - start_time
-    print("Epoch duration", epoch_time/60, "mins")
+    print("Epoch duration", epoch_time/60, "mins")   
     start_time = time.time()
 
 i=0
-j=4
+plot_freq=4
 if model == 'resnet32':
-    j=4
+    plot_freq=4
 elif model == 'resnet56':
-    j=8
+    plot_freq=8
 
 print("Pruning>")
 for layer in reversed(range(1,N_layers)):
@@ -276,8 +282,8 @@ for layer in reversed(range(1,N_layers)):
     for _ in range(pruning_num):
         start_time = time.time()
 
-        print("Pruning one filter")
-        prune(layer)
+        print("Pruning layer", layer)
+        idx = prune(layer)
         i+=1
 
         print("Fine tuning")
@@ -288,10 +294,9 @@ for layer in reversed(range(1,N_layers)):
 
         epoch_time = time.time() - start_time
         print("single prune duration", epoch_time/60, "mins")
-               
-        if i%j ==0:
-            recorder.update(warmup-1+i//j, train_loss, train_acc, test_loss,
-                        test_acc)
+        
+        if i%plot_freq ==0:
+            recorder.update(train_loss, train_acc, test_loss, test_acc)
             recorder.plot_curve_acc('prune_curve.png')
             recorder.plot_curve_loss('prune_curve.png')
             
